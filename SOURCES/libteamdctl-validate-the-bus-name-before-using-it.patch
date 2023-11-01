@@ -1,0 +1,61 @@
+From 3bbce8a171deab6cd3d7d57d128bc2dbaea451f0 Mon Sep 17 00:00:00 2001
+Message-Id: <3bbce8a171deab6cd3d7d57d128bc2dbaea451f0.1664556124.git.lucien.xin@gmail.com>
+From: Xin Long <lucien.xin@gmail.com>
+Date: Fri, 15 Apr 2022 11:41:39 -0400
+Subject: [PATCH] libteamdctl: validate the bus name before using it
+
+Using bus name without validating it will cause core dump generated,
+and it can be reproduced by:
+
+  # ip link add dummy0.1 type dummy
+  # teamdctl dummy0.1 state dump
+
+  This is normally a bug in some application using the D-Bus library.
+
+    D-Bus not built with -rdynamic so unable to print a backtrace
+  Aborted (core dumped)
+
+Doing this many times can even create too many core files, customers
+may complain about it.
+
+This is triggered when calling cli_method_call("ConfigDump") in
+cli_init(), so fix it by returning err in cli->init/cli_dbus_init()
+if the bus name fails to validate.
+
+Note this is safe, as with dbus, we can't use invalid dbus name to
+create the team dev either.
+
+Fixes: d8163e34c25c ("libteamdctl: do test method call instead or Introspect call")
+Reported-by: Uday Patel <upatel@redhat.com>
+Signed-off-by: Xin Long <lucien.xin@gmail.com>
+Signed-off-by: Jiri Pirko <jiri@nvidia.com>
+---
+ libteamdctl/cli_dbus.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/libteamdctl/cli_dbus.c b/libteamdctl/cli_dbus.c
+index dfef5c4..242ef86 100644
+--- a/libteamdctl/cli_dbus.c
++++ b/libteamdctl/cli_dbus.c
+@@ -183,12 +183,17 @@ static int cli_dbus_init(struct teamdctl *tdc, const char *team_name, void *priv
+ 	if (ret == -1)
+ 		return -errno;
+ 
++	err = -EINVAL;
+ 	dbus_error_init(&error);
++	if (!dbus_validate_bus_name(cli_dbus->service_name, &error)) {
++		err(tdc, "dbus: Could not validate bus name: %s - %s",
++			 error.name, error.message);
++		goto free_service_name;
++	}
+ 	cli_dbus->conn = dbus_bus_get(DBUS_BUS_SYSTEM, &error);
+ 	if (!cli_dbus->conn) {
+ 		err(tdc, "dbus: Could not acquire the system bus: %s - %s",
+ 			 error.name, error.message);
+-		err = -EINVAL;
+ 		goto free_service_name;
+ 	}
+ 	err = 0;
+-- 
+2.27.0
+

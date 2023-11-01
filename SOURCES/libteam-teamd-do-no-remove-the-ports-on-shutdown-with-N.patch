@@ -1,0 +1,46 @@
+From dbb2cfca35d2cd15125eb84e8f3940f8cc3ea860 Mon Sep 17 00:00:00 2001
+From: Lubomir Rintel <lkundrak@v3.sk>
+Date: Mon, 10 Oct 2022 18:33:53 +0200
+Subject: [PATCH] teamd: do no remove the ports on shutdown with -N
+
+With -N, teamd currently leaves the team device in place on shutdown,
+as it's supposed to, but it removes all the ports. This severely limits
+usefullness of the option, because it's still impossible to replace
+the daemon with another one without disrupting connectivity.
+
+One use case where this is important is the handover from initrd to real
+root, when a team device was used to provide connectivity to a network
+root filesystem:
+
+Systemd's isolation of switch-root.target stops NetworkManager.service and
+then terminates its kids, including teamd.  The real NetworkManager.service
+would eventually catch up and restart it, but there's a short period when
+team ports are removed which is not great if we're booting off that device.
+Also, it may be that ports come up in different order, causing team to get
+a different MAC address, which will invalidate the DHCP lease we got
+beforehands and screwing up L3 addressing.
+
+Let's not flush the ports when -N is used.
+
+Suggested-by: Jiri Pirko <jiri@resnulli.us>
+Signed-off-by: Lubomir Rintel <lkundrak@v3.sk>
+Signed-off-by: Jiri Pirko <jiri@nvidia.com>
+---
+ teamd/teamd_per_port.c | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/teamd/teamd_per_port.c b/teamd/teamd_per_port.c
+index d429753..9689df4 100644
+--- a/teamd/teamd_per_port.c
++++ b/teamd/teamd_per_port.c
+@@ -217,7 +217,6 @@ static void port_obj_remove(struct teamd_context *ctx,
+ 	struct teamd_port *tdport = _port(port_obj);
+ 
+ 	teamd_event_port_removed(ctx, tdport);
+-	teamd_port_remove(ctx, tdport);
+ 	port_obj_destroy(ctx, port_obj);
+ 	port_obj_free(port_obj);
+ }
+-- 
+2.31.1
+
