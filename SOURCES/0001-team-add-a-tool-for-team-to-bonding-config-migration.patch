@@ -1,0 +1,339 @@
+From 7a2260a85cb14c58792273753e4f58cca358c548 Mon Sep 17 00:00:00 2001
+From: Hangbin Liu <haliu@redhat.com>
+Date: Tue, 30 Mar 2021 17:06:42 +0800
+Subject: [PATCH] team: add a tool for team to bonding config migration
+
+Since we will deprecate team on RHEL9 and remove it on RHEL10, add a tool
+for team to bonding config migration.
+
+Signed-off-by: Hangbin Liu <haliu@redhat.com>
+---
+ man/teamd.8     |   2 +
+ utils/team2bond | 302 ++++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 304 insertions(+)
+ create mode 100755 utils/team2bond
+
+diff --git a/man/teamd.8 b/man/teamd.8
+index 3d27eae..652111b 100644
+--- a/man/teamd.8
++++ b/man/teamd.8
+@@ -32,6 +32,8 @@ teamd \(em team network device control daemon
+ .br
+ .B teamd
+ .BR  \-h | \-V
++.SH NOTE
++Teaming is deprecated on RHEL9 and will be removed on RHEL10! For replacement please use bonding.
+ .SH DESCRIPTION
+ .PP
+ teamd is a daemon to control a given team network device, during runtime,
+diff --git a/utils/team2bond b/utils/team2bond
+new file mode 100755
+index 0000000..6ac9d52
+--- /dev/null
++++ b/utils/team2bond
+@@ -0,0 +1,302 @@
++#!/bin/env python3
++# vim: sts=4 ts=4 sw=4 expandtab :
++
++from optparse import OptionParser
++import subprocess
++import json
++import sys
++
++def handle_cmd_line():
++    parser = OptionParser()
++    parser.add_option('--config', dest='config', default = '',
++                      help = "convert the team JSON format configuration file " \
++                      + "to NetworkManager connection profile, please use " \
++                      + "'teamdctl TEAM config dump' to dump the config file." \
++                      + " Note the script only convert config file. IP " \
++                      + "address configurations still need to be set manually.")
++    parser.add_option('--rename', dest='rename', default = '',
++                      help = "rename the default team interface name." \
++                      + " Careful: firewall rules, aliases interfaces, etc., " \
++                      + "will break after the renaming because the tool " \
++                      + "will only change the config file, nothing else.")
++    parser.add_option('--exec-cmd', dest='exec_cmd', action='store_true', default = False,
++                      help = "exec nmcli and add the connections directly " \
++                      + "instead of printing the nmcli cmd to screen. " \
++                      + "This parameter is NOT recommend, it would be good " \
++                      + "to double check the cmd before apply.")
++
++    (options, args) = parser.parse_args()
++
++    if subprocess.run(['nmcli', '-v'], stdout=subprocess.DEVNULL,
++                      stderr=subprocess.DEVNULL).returncode != 0:
++        print("Warn: NetworkManager is needed for this script!");
++        sys.exit(1)
++
++    return options
++
++def convert_runner_opts(runner_opts):
++    bond_opts = ""
++
++    if runner_opts['name'] == 'broadcast':
++        bond_opts = "mode=broadcast"
++    elif runner_opts['name'] == 'roundrobin':
++        bond_opts = "mode=balance-rr"
++    elif runner_opts['name'] == 'activebackup':
++        bond_opts = "mode=active-backup"
++        if 'hwaddr_policy' in runner_opts:
++	        if runner_opts['hwaddr_policy'] == 'same_all':
++	            bond_opts += ",fail_over_mac=none"
++	        elif runner_opts['hwaddr_policy'] == 'by_active':
++	            bond_opts += ",fail_over_mac=active"
++	        elif runner_opts['hwaddr_policy'] == 'only_active':
++	            bond_opts += ",fail_over_mac=follow"
++	        else:
++	            print("# Warn: invalid runner.hwaddr_policy: " + runner_opts['hwaddr_policy'])
++    elif runner_opts['name'] == 'loadbalance':
++        bond_opts = "mode=balance-tlb"
++    elif runner_opts['name'] == 'lacp':
++        bond_opts = "mode=802.3ad"
++        if 'active' in runner_opts:
++            print("# Warn: option runner.active: %r is not supported by bonding" % runner_opts['active'])
++        if 'fast_rate' in runner_opts:
++            if runner_opts['fast_rate']:
++                bond_opts += ",lacp_rate=1"
++            else:
++                bond_opts += ",lacp_rate=0"
++        if 'sys_prio' in runner_opts:
++                bond_opts += ",ad_actor_sys_prio=" + str(runner_opts['sys_prio'])
++        if 'min_ports' in runner_opts:
++            bond_opts += ",min_links=" + runner_opts['min_ports']
++        if 'agg_select_policy' in runner_opts:
++            if runner_opts['agg_select_policy'] == 'bandwidth':
++                bond_opts += ",ad_select=bandwidth"
++            elif runner_opts['agg_select_policy'] == 'count':
++                bond_opts += ",ad_select=count"
++            else:
++                print("# Warn: Option runner.agg_select_policy: %s is not supported by bonding" %
++                        runner_opts['agg_select_policy'])
++                sys.exit(1)
++    else:
++        print("Error: Unsupported runner.name: %s for bonding" % runner_opts['name'])
++        sys.exit(1)
++
++    if 'tx_hash' in runner_opts:
++        print("# Warn: tx_hash ipv4, ipv6, tcp, udp, sctp are not supported by bonding")
++        if 'vlan' in runner_opts['tx_hash']:
++            bond_opts +=",xmit_hash_policy=vlan+srcmac"
++        if 'eth' in runner_opts['tx_hash']:
++            bond_opts +=",xmit_hash_policy=layer2"
++            if 'l3' in runner_opts['tx_hash'] or 'ip' in runner_opts['tx_hash']:
++                bond_opts +="+3"
++        elif ('l3' in runner_opts['tx_hash'] or 'ip' in runner_opts['tx_hash']) \
++            and 'l4' in runner_opts['tx_hash']:
++            bond_opts +=",xmit_hash_policy=layer3+4"
++
++    if 'tx_balancer' in runner_opts:
++        if 'name' in runner_opts['tx_balancer']:
++            if runner_opts['tx_balancer']['name'] == 'basic':
++                bond_opts += ",tlb_dynamic_lb=1"
++        if 'balancing_interval' in runner_opts['tx_balancer']:
++            print("# Warn: option runner.tx_balancer.balancing_interval: %d is not supported by bonding" %
++                    runner_opts['tx_balancer']['balancing_interval'])
++
++    return bond_opts
++
++# arp_target is used to store multi targets
++# exist_opts is used to check if there are duplicated arp_intervals
++def convert_link_watch(link_watch_opts, arp_target, exist_opts):
++    bond_opts=""
++    if 'name' not in link_watch_opts:
++        print("Error: no link_watch.name in team config file!")
++        sys.exit(1)
++
++    if link_watch_opts['name'] == 'ethtool':
++        bond_opts += ",miimon=100"
++        if 'delay_up' in link_watch_opts:
++            bond_opts += ",updelay=" + str(link_watch_opts['delay_up'])
++        if 'delay_down' in link_watch_opts:
++            bond_opts += ",downdelay=" + str(link_watch_opts['delay_down'])
++    elif link_watch_opts['name'] == 'arp_ping':
++        if 'interval' in link_watch_opts:
++            if exist_opts.find('arp_interval') > 0:
++                print("# Warn: duplicated arp_interval detected, bonding supports only one.")
++            else:
++                bond_opts += ",arp_interval=" + str(link_watch_opts['interval'])
++        if 'target_host' in link_watch_opts:
++            arp_target.append(link_watch_opts['target_host'])
++
++        if 'validate_active' in link_watch_opts and link_watch_opts['validate_active'] and \
++           'validate_inactive' in link_watch_opts and link_watch_opts['validate_inactive']:
++            if exist_opts.find('arp_validate') > 0:
++                print("# Warn: duplicated arp_validate detected, bonding supports only one.")
++            else:
++                bond_opts += ",arp_validate=all"
++        elif 'validate_active' in link_watch_opts and link_watch_opts['validate_active']:
++            if exist_opts.find('arp_validate') > 0:
++                print("# Warn: duplicated arp_validate detected, bonding supports only one.")
++            else:
++                bond_opts += ",arp_validate=active"
++        elif 'validate_inactive' in link_watch_opts and link_watch_opts['validate_inactive']:
++            if exist_opts.find('arp_validate') > 0:
++                print("# Warn: duplicated arp_validate detected, bonding supports only one.")
++            else:
++                bond_opts += ",arp_validate=backup"
++
++        if 'init_wait' in link_watch_opts:
++            print("# Warn: option link_watch.init_wait: %d is not supported by bonding" % link_watch_opts['init_wait'])
++        if 'missed_max' in link_watch_opts:
++            print("# Warn: option link_watch.missed_max: %d is not supported by bonding" % link_watch_opts['missed_max'])
++        if 'source_host' in link_watch_opts:
++            print("# Warn: option link_watch.source_host: %s is not supported by bonding" % link_watch_opts['source_host'])
++        if 'vlanid' in link_watch_opts:
++            print("# Warn: option link_watch.vlanid: %d is not supported by bonding" % link_watch_opts['vlanid'])
++        if 'send_always' in link_watch_opts:
++            print("# Warn: option link_watch.send_always: %r is not supported by bonding" % link_watch_opts['send_always'])
++    else:
++        print("# Error: Option link_watch.name: %s is not supported by bonding" %
++                 link_watch_opts['name'])
++        sys.exit(1)
++
++    return bond_opts
++
++def convert_opts(bond_name, team_opts, exec_cmd):
++    bond_opts = ""
++
++    # Check runner/mode first
++    if 'runner' in team_opts:
++        bond_opts = convert_runner_opts(team_opts['runner'])
++    else:
++        print("Error: No runner in team config file!")
++        sys.exit(1)
++
++    if 'hwaddr' in team_opts:
++        print("# Warn: option hwaddr: %s is not supported by bonding" % team_opts['hwaddr'])
++
++    if 'notify_peers' in team_opts:
++        if 'count' in team_opts['notify_peers']:
++            bond_opts += ",num_grat_arp=" + str(team_opts['notify_peers']['count'])
++            bond_opts += ",num_unsol_na=" + str(team_opts['notify_peers']['count'])
++        if 'interval' in team_opts['notify_peers']:
++            bond_opts += ",peer_notif_delay=" + str(team_opts['notify_peers']['interval'])
++    if 'mcast_rejoin' in team_opts:
++        if 'count' in team_opts['mcast_rejoin']:
++            bond_opts += ",resend_igmp=" + str(team_opts['mcast_rejoin']['count'])
++        if 'interval' in team_opts['mcast_rejoin']:
++            print("# Warn: option mcast_rejoin.interval: %d is not supported by bonding" % team_opts['mcast_rejoin']['count'])
++
++    # The link_watch maybe a dict or list
++    arp_target = list()
++    if 'link_watch' in team_opts:
++        if isinstance(team_opts['link_watch'], list):
++            for link_watch_opts in team_opts['link_watch']:
++                bond_opts += convert_link_watch(link_watch_opts, arp_target, bond_opts)
++        elif isinstance(team_opts['link_watch'], dict):
++            bond_opts += convert_link_watch(team_opts['link_watch'], arp_target, bond_opts)
++    # Check link watch in team ports if we don't have global link_watch
++    elif 'ports' in team_opts:
++        for iface in team_opts['ports']:
++            if 'link_watch' in team_opts['ports'][iface]:
++                bond_opts += convert_link_watch(team_opts['ports'][iface]['link_watch'], arp_target, bond_opts)
++    else:
++        print("Warn: No link_watch in team config file, use miimon=100 by default")
++        bond_opts += ",miimon=100"
++
++    if arp_target:
++        bond_opts += ",arp_ip_target=" + " ".join(arp_target)
++
++    if exec_cmd:
++        subprocess.run(['nmcli', 'con', 'add', 'type', 'bond', 'ifname',
++                        bond_name, 'bond.options', bond_opts])
++    else:
++        print('nmcli con add type bond ifname ' + bond_name \
++              + ' bond.options "' + bond_opts + '"')
++
++def setup_ports(bond_name, team_opts, exec_cmd):
++    primary = {'name': "", 'prio': -2**63, 'sticky': False}
++    bond_ports = []
++    prio = 0
++
++    if 'ports' in team_opts:
++        for iface in team_opts['ports']:
++            bond_ports.append(iface)
++            if 'link_watch' in team_opts['ports'][iface] and \
++                'link_watch' in team_opts:
++                print("# Warn: Option link_watch in interface %s will be ignored as we have global link_watch set!" % iface)
++            if 'queue_id' in team_opts['ports'][iface]:
++                print("# Warn: Option queue_id: %d on interface %s is not supported by NM yet, please see rhbz:1949127" %
++						(team_opts['ports'][iface]['queue_id'], iface))
++            if 'lacp_prio' in team_opts['ports'][iface]:
++                print("# Warn: Option lacp_prio: %d on interface %s is not supported by bonding" %
++						(team_opts['ports'][iface]['lacp_prio'], iface))
++            if 'prio' in team_opts['ports'][iface]:
++                prio = int(team_opts['ports'][iface]['prio'])
++                if prio > primary['prio'] and primary['sticky'] is False:
++                    primary['name'] = iface
++                    primary['prio'] = prio
++            if 'sticky' in team_opts['ports'][iface] and \
++                team_opts['ports'][iface]['sticky']:
++                primary['name'] = iface
++                primary['sticky'] = True
++
++    for port in bond_ports:
++        ret = subprocess.run(['nmcli', '-g', 'general.type', 'dev', 'show', port],
++                             stderr=subprocess.PIPE, stdout=subprocess.PIPE)
++        if ret.returncode != 0:
++            print("# Warn: Get dev %s type failed, will use type ethernet by default" % port)
++            if_type = 'ethernet'
++        elif ret.stdout.find(b'ethernet') != 0:
++            print("# Warn: %s is not a ethernet device, please make sure the type is correct" % port)
++            if_type = str(ret.stdout, 'utf-8').strip()
++        else:
++            if_type = str(ret.stdout, 'utf-8').strip()
++
++        if exec_cmd:
++            subprocess.run(['nmcli', 'con', 'add', 'type', if_type,
++                            'ifname', port, 'master', bond_name])
++        else:
++            print('nmcli con add type %s ifname %s master %s' % (if_type, port, bond_name))
++
++    if primary['name']:
++        if exec_cmd:
++            subprocess.run(['nmcli', 'con', 'mod', 'bond-' + bond_name,
++                            '+bond.options', "primary=" + primary['name']])
++        else:
++            print('nmcli con mod bond-' + bond_name \
++                  + ' +bond.options "primary=' + primary['name'] + '"')
++
++def main():
++    options = handle_cmd_line()
++    team_opts = dict()
++
++    if options.config:
++        try:
++            with open(options.config, 'r') as f:
++                team_opts = json.load(f)
++        except OSError as e:
++            print(e)
++            sys.exit(1)
++    else:
++        print("Error: Please supply a team config file")
++        sys.exit(1)
++
++    if not team_opts['device']:
++        print("Error: No team device name in team config file")
++        sys.exit(1)
++
++    if not options.exec_cmd:
++        print("### These are the commands to configure a bond interface " +
++              "similar to this team config:")
++
++    if options.rename:
++        bond_name = options.rename
++    else:
++        bond_name = team_opts['device']
++
++    convert_opts(bond_name, team_opts, options.exec_cmd)
++    setup_ports(bond_name, team_opts, options.exec_cmd)
++
++    if not options.exec_cmd:
++        print("### After this, IP addresses, routes and so need to be reconfigured.")
++
++if __name__ == '__main__':
++	main()
+-- 
+2.26.3
+

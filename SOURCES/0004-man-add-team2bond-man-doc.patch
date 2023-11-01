@@ -1,0 +1,99 @@
+From ff20b5982cf674e8a0a7267645963a79d2e46729 Mon Sep 17 00:00:00 2001
+From: Hangbin Liu <haliu@redhat.com>
+Date: Wed, 21 Jul 2021 17:31:59 +0800
+Subject: [PATCH 4/4] man: add team2bond man doc
+
+Signed-off-by: Hangbin Liu <haliu@redhat.com>
+---
+ man/Makefile.am |  2 +-
+ man/team2bond.1 | 69 +++++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 70 insertions(+), 1 deletion(-)
+ create mode 100644 man/team2bond.1
+
+diff --git a/man/Makefile.am b/man/Makefile.am
+index 4c63629..52f0fb9 100644
+--- a/man/Makefile.am
++++ b/man/Makefile.am
+@@ -1,3 +1,3 @@
+ dist_man8_MANS = teamd.8 teamdctl.8 teamnl.8
+ dist_man5_MANS = teamd.conf.5
+-dist_man1_MANS = bond2team.1
++dist_man1_MANS = bond2team.1 team2bond.1
+diff --git a/man/team2bond.1 b/man/team2bond.1
+new file mode 100644
+index 0000000..f47aba4
+--- /dev/null
++++ b/man/team2bond.1
+@@ -0,0 +1,69 @@
++.TH TEAM2BOND 1 "2021-07-20" "libteam" "Team to Bonding conversion tool"
++.SH NAME
++team2bond \(em Converts a team configuration to a NetworkManager bond configuration
++.SH SYNOPSIS
++.B team2bond
++.RB [options]
++.SH DESCRIPTION
++.PP
++team2bond is a tool to convert team options to bonding options. During the conversion, team2bond tries to create a bond configuration that has the same or similar functionality as the team.
++.PP
++This tool converts a team JSON format configuration file to NetworkManager nmcli commands that you can use to set up a network bonding device. After verifying the commands and deleting the corresponding team device, run the nmcli commands manually or with parameter
++.B \-\-exec
++to create the NetworkManager connection profile.
++.PP
++.B Important:
++Note that deleting the team device makes this connection unavailable until you recreated the bond.
++.SH OPTIONS
++.TP
++.B "\-\-config <team json config file>"
++Specifies the team JSON format configuration file to convert. Use the 'teamdctl <TEAMNAME> config dump [actual]' command to create the JSON file.
++.TP
++.B "\-\-rename <interface>"
++This is a convenient option to replace the original interface name with the specified name. For example, use \-\-rename bond0 to change the interface name to bond0. Note, firewall rules, alias interfaces, and so on, that are tied to the original interface name can break after the renaming an interface because the tool only changes the NetworkManager profile.
++.TP
++.B "\-\-help"
++Print a help text to console and exit.
++.SH DANGEROUS OPTION
++.TP
++.B "\-\-exec"
++Executes the generated nmcli commands and adds the connections directly instead of printing then to the screen. This parameter is NOT recommended. Double-check the generated commands before you apply them.
++.SH EXAMPLE STEPS
++.TP
++1. Save the current 'team0' ip addresses, firewall rules, alias, etc.
++.TP
++2. Dump the current 'team0' configuration to a JSON file. Using the 'actual' option, team2bond dumps the actual config instead of the initial config:
++.TP
++.RS 1
++# teamdctl team0 config dump actual > team0.json
++.RE
++.TP
++3. Run the team2bond utility in dry-run mode to display nmcli commands that set up a network bond with similar settings as the team device:
++.TP
++.RS 1
++# team2bond \%--config team0.json
++.RE
++.TP
++To convert the current 'team0' configuration to bonding connection profile and rename the interface name to 'bond0':
++.TP
++.RS 1
++# team2bond \%--config team0.json \%--rename bond0
++.RE
++.TP
++4. Examine these generated nmcli commands, and make sure all parameters are correct.
++.TP
++5. Delete the team0 device by using the teamd or nmcli utility to avoid a device conflict. Then execute the commands the team2bond utility displayed in the previous step manually or use the \-\-exec option:
++.TP
++.RS 1
++# team2bond \%--config team0.json \%--rename bond0 \%--exec
++.RE
++.SH CAVEATS
++.PP
++The tool will not convert any other configuration which might be tied to the current setup. For instance, IP addresses, firewall rules, alias interfaces, bridges, and so on.
++.SH AUTHOR
++.PP
++Hangbin Liu <haliu@redhat.com>
++.SH SEE ALSO
++.BR nmcli (1),
++.BR teamdctl (8),
++.BR teamd.conf (5).
+-- 
+2.31.1
+
