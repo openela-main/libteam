@@ -1,0 +1,67 @@
+From f961dbffb5ca769c2a87a6f1e2548e63d2a0a169 Mon Sep 17 00:00:00 2001
+From: Hangbin Liu <haliu@redhat.com>
+Date: Mon, 24 May 2021 12:58:02 +0800
+Subject: [PATCH 2/2] team2bond: fix min_ports format and add lacp_key
+
+Should set to str when add min_ports to bond config.
+Also add missed lacp_key config.
+
+Signed-off-by: Hangbin Liu <haliu@redhat.com>
+---
+ utils/team2bond | 19 ++++++++++++++++++-
+ 1 file changed, 18 insertions(+), 1 deletion(-)
+
+diff --git a/utils/team2bond b/utils/team2bond
+index 6ac9d52..265bc79 100755
+--- a/utils/team2bond
++++ b/utils/team2bond
+@@ -66,7 +66,7 @@ def convert_runner_opts(runner_opts):
+         if 'sys_prio' in runner_opts:
+                 bond_opts += ",ad_actor_sys_prio=" + str(runner_opts['sys_prio'])
+         if 'min_ports' in runner_opts:
+-            bond_opts += ",min_links=" + runner_opts['min_ports']
++            bond_opts += ",min_links=" + str(runner_opts['min_ports'])
+         if 'agg_select_policy' in runner_opts:
+             if runner_opts['agg_select_policy'] == 'bandwidth':
+                 bond_opts += ",ad_select=bandwidth"
+@@ -214,6 +214,7 @@ def convert_opts(bond_name, team_opts, exec_cmd):
+ def setup_ports(bond_name, team_opts, exec_cmd):
+     primary = {'name': "", 'prio': -2**63, 'sticky': False}
+     bond_ports = []
++    lacp_key = 0
+     prio = 0
+ 
+     if 'ports' in team_opts:
+@@ -228,6 +229,15 @@ def setup_ports(bond_name, team_opts, exec_cmd):
+             if 'lacp_prio' in team_opts['ports'][iface]:
+                 print("# Warn: Option lacp_prio: %d on interface %s is not supported by bonding" %
+ 						(team_opts['ports'][iface]['lacp_prio'], iface))
++            if 'lacp_key' in team_opts['ports'][iface]:
++                if lacp_key == 0:
++                    lacp_key = team_opts['ports'][iface]['lacp_key']
++                    if lacp_key < 0 or lacp_key > 1023:
++                        lacp_key = 0
++                        print("# Warn: Option lacp_key: Invalid value %d for port %s" % (lacp_key, iface))
++                else:
++                    print("# Warn: Option lacp_key: already has one key %d, ignore the new one %d" %
++                        (lacp_key, team_opts['ports'][iface]['lacp_key']))
+             if 'prio' in team_opts['ports'][iface]:
+                 prio = int(team_opts['ports'][iface]['prio'])
+                 if prio > primary['prio'] and primary['sticky'] is False:
+@@ -256,6 +266,13 @@ def setup_ports(bond_name, team_opts, exec_cmd):
+         else:
+             print('nmcli con add type %s ifname %s master %s' % (if_type, port, bond_name))
+ 
++    if lacp_key != 0:
++        if exec_cmd:
++            subprocess.run(['nmcli', 'con', 'mod', 'bond-' + bond_name,
++                            '+bond.options', "ad_user_port_key=" + str(lacp_key)])
++        else:
++            print('nmcli con mod bond-' + bond_name \
++                  + ' +bond.options "ad_user_port_key=' + str(lacp_key) + '"')
+     if primary['name']:
+         if exec_cmd:
+             subprocess.run(['nmcli', 'con', 'mod', 'bond-' + bond_name,
+-- 
+2.26.3
+

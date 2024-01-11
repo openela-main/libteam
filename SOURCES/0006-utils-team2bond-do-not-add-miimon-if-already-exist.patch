@@ -1,0 +1,27 @@
+From 5616af4387302e9e6ec07dd5466f4a0e93c50a59 Mon Sep 17 00:00:00 2001
+From: Hangbin Liu <haliu@redhat.com>
+Date: Mon, 7 Mar 2022 14:39:25 +0800
+Subject: [PATCH 6/6] utils/team2bond: do not add miimon if already exist
+
+Signed-off-by: Hangbin Liu <haliu@redhat.com>
+---
+ utils/team2bond | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/utils/team2bond b/utils/team2bond
+index 118f38b..b5555c1 100755
+--- a/utils/team2bond
++++ b/utils/team2bond
+@@ -117,7 +117,8 @@ def convert_link_watch(link_watch_opts, arp_target, exist_opts):
+         sys.exit(1)
+ 
+     if link_watch_opts['name'] == 'ethtool':
+-        bond_opts += ",miimon=100"
++        if exist_opts.find("miimon") == -1:
++            bond_opts += ",miimon=100"
+         if 'delay_up' in link_watch_opts:
+             bond_opts += ",updelay=" + str(link_watch_opts['delay_up'])
+         if 'delay_down' in link_watch_opts:
+-- 
+2.31.1
+

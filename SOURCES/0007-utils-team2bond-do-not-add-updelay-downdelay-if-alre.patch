@@ -1,0 +1,79 @@
+From de84fb3debdf55080bafbf015d76989c17276d01 Mon Sep 17 00:00:00 2001
+From: Hangbin Liu <haliu@redhat.com>
+Date: Mon, 16 May 2022 15:40:35 +0800
+Subject: [PATCH 7/1] utils/team2bond: do not add updelay/downdelay if already exist
+
+Also check if miimon/arp_interval already set.
+
+Signed-off-by: Hangbin Liu <haliu@redhat.com>
+---
+ utils/team2bond | 32 +++++++++++++++++++++++++-------
+ 1 file changed, 25 insertions(+), 7 deletions(-)
+
+diff --git a/utils/team2bond b/utils/team2bond
+index b5555c1..111b83b 100755
+--- a/utils/team2bond
++++ b/utils/team2bond
+@@ -117,34 +117,52 @@ def convert_link_watch(link_watch_opts, arp_target, exist_opts):
+         sys.exit(1)
+ 
+     if link_watch_opts['name'] == 'ethtool':
+-        if exist_opts.find("miimon") == -1:
++        if exist_opts.find("arp_interval") >= 0:
++            print("# Warn: detecte miimon(ethtool) setting, but arp_interval(arp_ping) already set, will ignore.")
++            return bond_opts
++
++        if exist_opts.find("miimon") >= 0:
++            print("# Warn: duplicated miimon detected, bonding supports only one.")
++        else:
+             bond_opts += ",miimon=100"
++
+         if 'delay_up' in link_watch_opts:
+-            bond_opts += ",updelay=" + str(link_watch_opts['delay_up'])
++            if exist_opts.find('updelay') >= 0:
++                print("# Warn: duplicated updelay detected, bonding supports only one.")
++            else:
++                bond_opts += ",updelay=" + str(link_watch_opts['delay_up'])
+         if 'delay_down' in link_watch_opts:
+-            bond_opts += ",downdelay=" + str(link_watch_opts['delay_down'])
++            if exist_opts.find('downdelay') >= 0:
++                print("# Warn: duplicated downdelay detected, bonding supports only one.")
++            else:
++                bond_opts += ",downdelay=" + str(link_watch_opts['delay_down'])
+     elif link_watch_opts['name'] == 'arp_ping':
++        if exist_opts.find("miimon") >= 0:
++            print("# Warn: detecte arp_interval(arp_ping) setting, but miimon(ethtool) already set, will ignore.")
++            return bond_opts
++
+         if 'interval' in link_watch_opts:
+-            if exist_opts.find('arp_interval') > 0:
++            if exist_opts.find('arp_interval') >= 0:
+                 print("# Warn: duplicated arp_interval detected, bonding supports only one.")
+             else:
+                 bond_opts += ",arp_interval=" + str(link_watch_opts['interval'])
++
+         if 'target_host' in link_watch_opts:
+             arp_target.append(link_watch_opts['target_host'])
+ 
+         if 'validate_active' in link_watch_opts and link_watch_opts['validate_active'] and \
+            'validate_inactive' in link_watch_opts and link_watch_opts['validate_inactive']:
+-            if exist_opts.find('arp_validate') > 0:
++            if exist_opts.find('arp_validate') >= 0:
+                 print("# Warn: duplicated arp_validate detected, bonding supports only one.")
+             else:
+                 bond_opts += ",arp_validate=all"
+         elif 'validate_active' in link_watch_opts and link_watch_opts['validate_active']:
+-            if exist_opts.find('arp_validate') > 0:
++            if exist_opts.find('arp_validate') >= 0:
+                 print("# Warn: duplicated arp_validate detected, bonding supports only one.")
+             else:
+                 bond_opts += ",arp_validate=active"
+         elif 'validate_inactive' in link_watch_opts and link_watch_opts['validate_inactive']:
+-            if exist_opts.find('arp_validate') > 0:
++            if exist_opts.find('arp_validate') >= 0:
+                 print("# Warn: duplicated arp_validate detected, bonding supports only one.")
+             else:
+                 bond_opts += ",arp_validate=backup"
+-- 
+2.35.1
+
